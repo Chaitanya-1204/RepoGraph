@@ -1,0 +1,9 @@
+langchain
+langchain-core
+langchain-community
+langchain-openai
+gitpython
+chromadb
+python-dotenv
+langchain-huggingface
+torch
