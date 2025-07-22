@@ -210,3 +210,4 @@ __marimo__/
 
 cloned_repos/
 backend/vector_stores
+backend/agents/vector_stores

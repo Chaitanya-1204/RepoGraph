@@ -14,7 +14,7 @@ from langchain_core.documents import Document
 from langchain.text_splitter import Language
 
 
-# Allowed extensions
+# Allowed extensionsced 
 
 ALLOWED_EXTENSIONS = {
     ".c", ".cpp", ".java", ".py",
@@ -29,7 +29,7 @@ ALLOWED_EXTENSIONS = {
 
 #  Chunking parameters
 
-CHUNK_SIZE = 1000
+CHUNK_SIZE = 2000
 CHUNK_OVERLAP = 200
 
 
@@ -146,7 +146,7 @@ CHUNKER_MAP = {
 
 
 
-def code_rag(repo_path):
+def create_vector_store(repo_path):
     """
         The entire process of creating a code-aware RAG pipeline.
             1. Discovers and loads code files.
@@ -253,7 +253,7 @@ def code_rag(repo_path):
     
     print("Successfully added all documents to ChromaDB.")
 
-    vector_store.persist()
+    
 
     return vector_store
 
