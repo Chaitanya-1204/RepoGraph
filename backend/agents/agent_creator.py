@@ -5,12 +5,15 @@ from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from langchain.tools import Tool
 from dotenv import load_dotenv
+
+# from langchain.output_parsers.react_single_input import ReActSingleInputOutputParser
+# from langchain.agents.output_parsers import OutputFixingParser
 from functools import partial
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tools.file_system_tools import clone_repo, list_files_in_directory, read_file_content
-from tools.code_search_tool import search_codebase
+from tools.code_search_tool import search_codebase , create_vector_store
 from tools.visualizer_tool import generate_graph
 
 load_dotenv()
@@ -84,103 +87,6 @@ def create_agent(vector_store):
         # )
     ]
 
-    # # A more robust prompt to force the ReAct format.
-    # prompt_template = """
-    # You are an expert software engineer AI assistant. Your goal is to answer a user's question about a codebase by following a strict reasoning process.
-
-    # ---
-    # TOOLS:
-    # You have access to the following tools:
-    # {tools}
-
-    # ---
-    # RESPONSE FORMAT INSTRUCTIONS:
-    # To use a tool, you MUST use the following format, with no conversational text before or after.
-
-    # ```
-    # Thought: Do I need to use a tool? Yes. I need to [reason for using the tool].
-    # Action: The action to take, should be one of [{tool_names}]
-    # Action Input: The input to the action
-    # Observation: The result of the action
-    # ```
-
-    # When you have the final answer and do not need to use a tool anymore, you MUST use this exact format:
-
-    # ```
-    # Thought: Do I need to use a tool? No. I have all the information required.
-    # Final Answer: [Your final answer here. It MUST include both a text explanation and a Mermaid.js graph code block.]
-    # ```
-    # ---
-
-    # Begin!
-
-    # Question: {input}
-    # Thought: {agent_scratchpad}
-    # """
-    # prompt_template = """
-    #         You are an expert AI software engineer assistant tasked with answering questions about a codebase.
-    #         You must use a structured ReAct format to reason step by step, utilize tools when needed, and provide clear, insightful answers.
-
-    #         ---
-    #         TOOLS:
-    #         You can use the following tools to help answer questions:
-    #         {tools}
-
-    #         These tools let you search and retrieve parts of the codebase, documentation, or perform custom logic.
-
-    #         ---
-    #         RESPONSE FORMAT INSTRUCTIONS:
-    #         Whenever answering a question, follow this structured reasoning loop. **Do not break format**.
-
-    #         If you need to use a tool, use this format:
-            
-    #         Thought: Do I need to use a tool? Yes. I need to [reason for tool use].
-    #         Action: [Tool name here, must be one of {tool_names}]
-    #         Action Input: [Input to the tool, e.g. “Where is the image captioning model defined?”]
-    #         Observation: [Result returned by the tool]
-
-    #         You can repeat the tool usage loop multiple times.
-
-    #         When you have gathered everything needed and are ready to answer, use this final format:
-            
-            
-    #         Thought: Do I need to use a tool? No. I have all the information required.
-    #         Final Answer:
-    #         [Final answer must include:]
-
-    #         • A concise explanation of the answer.
-            
-            
-    #         ---
-    #         EXAMPLES OF QUESTIONS YOU MAY BE ASKED:
-
-    #         These are sample questions you may receive from users. Your reasoning loop should apply effectively to any of them:
-
-    #         1. What is the purpose of the BLIP model and how is it architected?
-    #         2. Where is the image captioning logic defined and how does it work?
-    #         3. Which file contains the vision encoder used by BLIP?
-    #         4. Where is the contrastive loss function implemented?
-    #         5. How is the tokenizer initialized in the BLIP model?
-    #         6. Which training script is used for visual question answering?
-    #         7. Where can I find the caption generation function in the code?
-    #         8. Which datasets are used for training and how are they loaded?
-    #         9. How does BLIP handle inference for image-text retrieval?
-    #         10. What are the available command-line arguments for training?
-    #         11. What is the relationship between BLIP and BLIP-2 in this repo?
-    #         12. Where is the model checkpoint loaded and which class uses it?
-    #         13. How is cross-modal attention implemented in BLIP?
-    #         14. How does the BLIP model handle pretraining with noisy web data?
-    #         15. Where is the `generate` function used and how can I modify it?
-
-    #         ---
-    #         Begin!
-
-    #         Question: {input}
-    #         {agent_scratchpad}
-
-            
-
-    # """
 
     prompt_template = """  
         You are an expert AI software engineer assistant tasked with answering questions about a codebase.
@@ -192,15 +98,30 @@ def create_agent(vector_store):
         {tools}
 
         ---
-        RESPONSE FORMAT INSTRUCTIONS:
+        
+        INSTRUCTIONS:
+        You MUST follow this process:
+        1.  **Reasoning Loop**: Use the 'Thought -> Action -> Observation' loop to gather information.
+        2.  **Final Answer**: Once you have enough information, you MUST exit the loop and provide ONLY a `Final Answer:`.
+
+        --- 
+       
+       
+        **REASONING LOOP FORMAT:**
+
         Always follow this structured reasoning loop. **Do not break format**.
 
-        **1. Thought:** First, think about the user's question and devise a plan. Do you need to use a tool? If so, what is the goal?
+        **1. Thought:** First, think about the user's question and devise a plan. Do you need to use a tool? If so, what is the goal?**After receiving an observation, I should pause and think if the result is relevant to the original question before proceeding.**
 
         **2. Action (Optional):** If you need to use a tool, use this block.
 
-        * **Action:** [Tool name, must be one of {tool_names}]
-        * **Action Input:** [Input to the tool]
+                ```json
+            {{
+                "action": "Tool name", the tools can be from {tool_names}
+                "action_input": "Input to the tool"
+            }}
+            ```
+
 
         **3. Observation:** This block will contain the result returned by the tool.
 
@@ -210,8 +131,15 @@ def create_agent(vector_store):
 
         ---
 
-        **4. Final Answer:**
-            Your final answer must be a clear, well-structured explanation in simple English. Follow this format:
+        
+        
+         **FINAL ANSWER FORMAT:**
+        When you are ready to answer, you MUST use this format. Do NOT include a 'Thought' block with your final answer. Your response must begin directly with `Final Answer:`.
+
+        
+        Final Answer: 
+            Your final answer must be a clear, well-structured explanation using Markdown. **Use backticks (`) for all code, function names, and file paths.** Follow this format:
+
 
             * **Summary:** [Provide a one or two-sentence summary of the answer.]
 
@@ -246,112 +174,7 @@ def create_agent(vector_store):
         15. Where is the `generate` function used and how can I modify it?
         
         ---
-        EXAMPLE REASONING LOOPS:
         
-        Here are examples of how you should reason and respond to different types of questions.
-
-        **Example 1: Finding a specific piece of code.**
-
-        Question: Which file contains the vision encoder used by BLIP?
-
-        Thought: I need to find the file that defines the "vision encoder" for the BLIP model. The best first step is to use the semantic search tool to look for relevant code chunks across the entire codebase.
-        Action: Codebase Search
-        Action Input: "BLIP model vision encoder"
-        Observation: 
-        --- Result 1 ---
-        Source File: ./models/blip.py
-        Content:
-        class BlipVisionModel(nn.Module):
-            def __init__(self, config: BlipVisionConfig):
-                super().__init__()
-                self.vision_model = VisionTransformer(...)
-        ---
-
-        Thought: The search result strongly indicates that the vision encoder is defined in the file `./models/blip.py` within the `BlipVisionModel` class. I have enough information to answer the user's question directly.
-        
-        Final Answer:
-            **Summary:** The vision encoder for the BLIP model is implemented in the `blip.py` file.
-
-            **Key Findings:**
-            * The core logic is located within the `BlipVisionModel` class.
-            * This class initializes a `VisionTransformer` which serves as the main visual feature extractor.
-
-            **Sources:**
-            * `./models/blip.py`
-            
-        
-            
-        **Example 2: Understanding the repository structure.**
-
-        Question: What is the high-level directory structure of this repository?
-
-        Thought: The user wants to understand the layout of the repository. The `List_Files` tool is perfect for this. I will use it on the root directory to see the top-level files and folders.
-        Action: List_Files
-        Action Input: .
-        Observation: ['models', 'scripts', 'configs', 'README.md', 'requirements.txt']
-
-        Thought: I have the top-level directory structure. This is enough to give a high-level overview. I will list these and briefly explain what each likely contains based on common software engineering conventions.
-        
-        
-        Final Answer:
-            **Summary:** The repository is organized into standard directories for models, scripts, and configurations.
-
-            **Key Findings:**
-            * `models/`: This directory likely contains the core model definitions, such as the BLIP architecture.
-            * `scripts/`: This probably holds utility scripts for training, evaluation, or data processing.
-            * `configs/`: This directory likely contains configuration files for different experiments or model setups.
-            * `README.md`: This is the main documentation file for the project.
-            * `requirements.txt`: This file lists the necessary Python packages to run the code.
-
-            **Sources:**
-            * N/A (Information gathered from directory listing)
-            
-            
-            
-        
-        **Example 3: Answering a complex question requiring multiple steps and tools.**
-
-        Question: How does the training script use the configuration file to build the BLIP model?
-
-        Thought: This is a multi-step question. First, I need to find the main training script. Then, I need to see how it reads a configuration. Finally, I need to find where it uses that configuration to instantiate the model. I'll start by searching for "training script".
-        Action: Codebase Search
-        Action Input: "training script"
-        Observation: 
-        --- Result 1 ---
-        Source File: ./scripts/train.py
-        Content:
-        def main():
-            config = parse_config()
-            model = create_model(config)
-            ...
-        ---
-
-        Thought: The observation shows that `scripts/train.py` is the training script. It calls `parse_config()` and then `create_model()`. Now I need to investigate the `create_model` function to see how the model is built. I will read the full content of `scripts/train.py`.
-        Action: Read_File
-        Action Input: ./scripts/train.py
-        Observation: [Content of train.py is returned, including the following]
-        from models.blip import BlipForQuestionAnswering
-
-        def create_model(config):
-            model = BlipForQuestionAnswering(config=config.model)
-            return model
-
-        Thought: I have all the pieces now. `scripts/train.py` reads a config, which is then passed to the `BlipForQuestionAnswering` class from `models/blip.py` to create the model instance. I have enough information to construct the final answer.
-        Final Answer:
-        **Summary:** The training script uses a configuration file to instantiate the `BlipForQuestionAnswering` model class.
-
-        **Key Findings:**
-        * The main training process is initiated in `scripts/train.py`.
-        * This script first parses a configuration file to get model parameters.
-        * The configuration object is then passed directly to the `BlipForQuestionAnswering` class, which is imported from `models/blip.py`.
-        * This class acts as a factory to construct the final BLIP model instance, ready for training.
-
-        **Sources:**
-        * `./scripts/train.py`
-        * `./models/blip.py`
-
-        ---
-
         ---
         Begin!
 
@@ -373,10 +196,19 @@ def create_agent(vector_store):
     
     prompt = ChatPromptTemplate.from_template(prompt_template)
     
+    
+    # base_parser = ReActSingleInputOutputParser()
+    # output_fixing_parser = OutputFixingParser.from_llm(
+    #     llm=llm,
+    #     parser=base_parser
+    # )
+    
+    
     agent = create_react_agent(
         llm=llm,
         tools=tools,
-        prompt=prompt
+        prompt=prompt,
+        # output_parser=output_fixing_parser
     )
     
     agent_executor = AgentExecutor(
@@ -390,11 +222,109 @@ def create_agent(vector_store):
 
 
 
-# def preprocess(repo_url):
-#     pass
+def preprocess(repo_url):
+    
+    path = clone_repo(repo_url)
+    
+    vector_store = create_vector_store(path)
+    
+    return vector_store
+
+def create_test_questions():
+    """
+    Defines a list of 10 tricky and diverse questions to test the RAG agent.
+    """
+    return [
+        # --- Code Specificity & Location ---
+        "1. Where is the `forward` method of the `BlipForQuestionAnswering` model defined, and what are its key operations?",
+        
+        # --- Execution Flow & Logic Tracing ---
+        "2. Trace the execution flow from the `train.py` script to the point where a single batch of data is passed to the model for training.",
+        
+        # --- Configuration & Hyperparameters ---
+        "3. What are the default values for the `learning_rate` and `weight_decay` hyperparameters in the VQA training configuration?",
+        
+        # --- Architectural Comparison ---
+        "4. How does the `BlipModel` class differ from the `BlipForConditionalGeneration` class? What are their primary use cases?",
+        
+        # --- Configuration File Role ---
+        "5. What is the role of the `med_config.json` file, and which parts of the model architecture does it control?",
+        
+        # --- Data Pipeline ---
+        "6. Explain the data loading and preprocessing pipeline for the COCO dataset as used in this repository.",
+        
+        # --- Conceptual Understanding ---
+        "7. What is the purpose of the `[CLS]` token in the context of the BLIP model's text encoder and its relation to multimodal fusion?",
+        
+        # --- Algorithm Explanation ---
+        "8. How does the model handle image-text matching for retrieval tasks, and which loss function is used?",
+        
+        # --- Code Modification Scenario ---
+        "9. If I wanted to modify the code to use a different image resolution for training, which files and functions would I need to change?",
+        
+        # --- High-Level "How-To" ---
+        "10. I want to fine-tune the model on my own custom dataset. What are the key files I need to modify, and what are the main steps involved?"
+    ]
+
+
+def test_agent_and_save_results(agent, questions, output_file="agent_test_results.md"):
+    """
+    Tests the agent on a list of questions and saves the results to a markdown file.
+    
+    Args:
+        agent: The initialized LangChain agent.
+        questions: A list of strings, where each string is a question.
+        output_file: The path to the markdown file to save results.
+    """
+    results_markdown = "# RAG Agent Test Results\n\n"
+    results_markdown += "This document contains the test results for the RAG agent on 10 tricky questions about the `salesforce/BLIP` repository.\n\n"
+    
+    for i, question in enumerate(questions):
+        print(f"\n--- Testing Question {i+1}/{len(questions)} ---")
+        print(f"Query: {question}")
+        
+        # Get the answer from the agent
+        answer = agent.invoke({
+            "input" : question
+        })
+        
+        
+        
+        
+        # Append to the markdown string
+        results_markdown += f"## Question {i+1}: {question}\n\n"
+        results_markdown += "### Agent's Answer\n\n"
+        results_markdown += f"{answer['output']}\n\n"
+        results_markdown += "---\n\n"
+        
+    # Save the final markdown content to a file
+    try:
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(results_markdown)
+        print(f"\nSuccessfully saved test results to '{output_file}'")
+    except IOError as e:
+        print(f"\nError saving file: {e}")
+
+    
+if __name__ == '__main__':
+
+    repo_url = "https://github.com/salesforce/BLIP.git"
+    
+    vector_store = preprocess(repo_url)
+    
+    agent = create_agent(vector_store)
     
     
-# if __name__ == '__main__':
+    # Define the list of test questions
+    test_questions = create_test_questions()
+    
+    # Run the tests and save the results
+    test_agent_and_save_results(agent, test_questions)
+
+    
+
+    
+    
 #     agent_executor = create_agent()
 
 #     repo_url = "https://github.com/salesforce/BLIP.git" # Using a smaller repo for faster testing
