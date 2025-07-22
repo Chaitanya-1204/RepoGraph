@@ -7,3 +7,4 @@ chromadb
 python-dotenv
 langchain-huggingface
 torch
+beautifulsoup4
